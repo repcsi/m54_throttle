@@ -93,7 +93,21 @@ double error = 0;
 //Zeroing helper for mapping accelerator to TPS range
 int accelerationRequest = 0;
 
-
+void setupTimers(){
+  // Timer 1 configuration
+  // prescaler: clockI/O / 1
+  // outputs enabled
+  // phase-correct PWM
+  // top of 400
+  //
+  // PWM frequency calculation
+  // 16MHz / 1 (prescaler) / 2 (phase-correct) / 400 (top) = 20kHz
+  TCCR1A = 0b10100000;
+  TCCR1B = 0b00010001;
+  ICR1 = 400;
+  //PWM1 = 9;
+  //OCR1A = 400 // max pwm on 20kHz if we need to fallback speed must be multiplied by 51/80, because 400*51/80=255
+}
 
 void moveValve();
 
@@ -159,7 +173,7 @@ void setup() {
 }
 
 void loop() {
-
+  
   int pedRead = analogRead(PED_PIN1); //  x
   int pedRead2 = analogRead(PED_PIN2); // 2 times x
   pedSum = pedRead + pedRead;
