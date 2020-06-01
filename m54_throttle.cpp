@@ -1,16 +1,19 @@
 #include <Arduino.h>
 #include <PID_v1.h>
-//#include <EnableInterrupt.h>
 
 //pins: 7: enable 
 //      8: inA
 //      9: inB
 //     11: pwm
+//     A0: valve pot1
+//     A1: valve pot2
+//     A2: pedal pot1
+//     A3: pedal pot1
 
-#define ENABLE_PIN 7
-#define INA_PIN 8
-#define INB_PIN 9
-#define PWM_PIN 11
+#define ENABLE_PIN 4
+#define INA_PIN 7
+#define INB_PIN 8
+#define PWM_PIN 9 //do not change this!
 
 
 #define TBV_PIN1 A0
@@ -18,43 +21,72 @@
 #define PED_PIN1 A2
 #define PED_PIN2 A3
 
+void analogWrite20k_Init( void )
+{
+  // Stop the timer while we muck with it
+  TCCR1B = (0 << ICNC1) | (0 << ICES1) | (0 << WGM13) | (0 << WGM12) | (0 << CS12) | (0 << CS11) | (0 << CS10);
+ 
+  // Set the timer to mode 14...
+  //
+  // Mode  WGM13  WGM12  WGM11  WGM10  Timer/Counter Mode of Operation  TOP   Update of OCR1x at TOV1  Flag Set on
+  //              CTC1   PWM11  PWM10
+  // ----  -----  -----  -----  -----  -------------------------------  ----  -----------------------  -----------
+  // 14    1      1      1      0      Fast PWM                         ICR1  BOTTOM                   TOP
+ 
+  // Set output on Channel A to...
+  //
+  // COM1A1  COM1A0  Description
+  // ------  ------  -----------------------------------------------------------
+  // 1       0       Clear OC1A/OC1B on Compare Match (Set output to low level).
+  TCCR1A =
+      (1 << COM1A1) | (0 << COM1A0) |   // COM1A1, COM1A0 = 1, 0
+      (0 << COM1B1) | (0 << COM1B0) |
+      (1 << WGM11) | (0 << WGM10);      // WGM11, WGM10 = 1, 0
+ 
+  // Set TOP to...
+  //
+  // fclk_I/O = 16000000
+  // N        = 1
+  // TOP      = 799
+  //
+  // fOCnxPWM = fclk_I/O / (N * (1 + TOP))
+  // fOCnxPWM = 16000000 / (1 * (1 + 799))
+  // fOCnxPWM = 16000000 / 800
+  // fOCnxPWM = 20000
+  ICR1 = 799;
+ 
+  // Ensure the first slope is complete
+  TCNT1 = 0;
+ 
+  // Ensure Channel B is irrelevant
+  OCR1B = 0;
+ 
+  // Ensure Channel A starts at zero / off
+  OCR1A = 0;
+ 
+  // We don't need no stinkin interrupts
+  TIMSK1 = (0 << ICIE1) | (0 << OCIE1B) | (0 << OCIE1A) | (0 << TOIE1);
 
-///////In search for 20KHz
-// TCCR1A
-// Bit                7      6      5      4      3      2        1       0
-// Bit Name         COM1A1 COM1A0 COM1B1 COM1B0   -----  -----    WGM11   WGM10
-// Initial Value      0      0      0      0      0      0        0       0
-// changed to         1      1      1      1      0      0        1       0
-//TCCR1A = B11110010;
+  // Ensure the Channel A pin is configured for output
+  DDRB |= (1 << DDB1);
 
-// TCCR1B
-// Bit              7      6      5       4        3       2       1        0
-// Bit Name         ICNC1  ICES1  -----   WGM13    WGM12   CS12    CS11     CS10
-// Initial Value    0      0      0       0        0       0       0        0
-// changed to       0      0      0       1        1       0       0        1  
-// CS12,CS11,CS10 = (0,0,1) System clock, no division
-//TCCR1B = B00011001;
+  // Start the timer...
+  //
+  // CS12  CS11  CS10  Description
+  // ----  ----  ----  ------------------------
+  // 0     0     1     clkI/O/1 (No prescaling)
+  TCCR1B =
+      (0 << ICNC1) | (0 << ICES1) |
+      (1 << WGM13) | (1 << WGM12) |              // WGM13, WGM12 = 1, 1
+      (0 << CS12) | (0 << CS11) | (1 << CS10);
+} 
 
-//TCCR1B = 25;// 00011001
-//ICR1 = 1023 ; // 10 bit resolution
-//OCR1A = 511; // vary this value between 0 and 1024 for 10-bit precision
-//OCR1B = 511; // vary this value between 0 and 1024 for 10-bit precision      
-///////In search for 20KHz
-
-/////second option:
-      // Timer 1 configuration
-      // prescaler: clockI/O / 1
-      // outputs enabled
-      // phase-correct PWM
-      // top of 400
-      //
-      // PWM frequency calculation
-      // 16MHz / 1 (prescaler) / 2 (phase-correct) / 400 (top) = 20kHz
-      //TCCR1A = 0b10100000;
-      //TCCR1B = 0b00010001;
-      //ICR1 = 400;
-/////second option:
-
+void analogWrite20k( uint16_t value )   {
+    if ( (value >= 0) && (value < 800) )
+  {
+    OCR1A = value;
+  }
+}
 
 //Define the PID controller
 double Input, Output, Setpoint;
@@ -74,7 +106,6 @@ double kD = 0.02;
 
 PID repPid(&Input, &Output, &Setpoint, kP, kI, kD, DIRECT);
 
-
 //Setting tps and accelerator limits.
 int tpsMin = 150;
 int tpsMax = 970;
@@ -93,43 +124,27 @@ double error = 0;
 //Zeroing helper for mapping accelerator to TPS range
 int accelerationRequest = 0;
 
-void setupTimers(){
-  // Timer 1 configuration
-  // prescaler: clockI/O / 1
-  // outputs enabled
-  // phase-correct PWM
-  // top of 400
-  //
-  // PWM frequency calculation
-  // 16MHz / 1 (prescaler) / 2 (phase-correct) / 400 (top) = 20kHz
-  TCCR1A = 0b10100000;
-  TCCR1B = 0b00010001;
-  ICR1 = 400;
-  //PWM1 = 9;
-  //OCR1A = 400 // max pwm on 20kHz if we need to fallback speed must be multiplied by 51/80, because 400*51/80=255
-}
+// void moveValve();
 
-void moveValve();
+// void forward(int pwm, int duration){
+//   digitalWrite(ENABLE_PIN,HIGH);
+//   digitalWrite(INA_PIN,LOW);
+//   digitalWrite(INB_PIN,HIGH);
+//   analogWrite(PWM_PIN,pwm);
+//   delay(duration);
+//   analogWrite(PWM_PIN,0);
+//   digitalWrite(ENABLE_PIN,LOW);
+// }
 
-void forward(int pwm, int duration){
-  digitalWrite(ENABLE_PIN,HIGH);
-  digitalWrite(INA_PIN,LOW);
-  digitalWrite(INB_PIN,HIGH);
-  analogWrite(PWM_PIN,pwm);
-  delay(duration);
-  analogWrite(PWM_PIN,0);
-  digitalWrite(ENABLE_PIN,LOW);
-}
-
-void backward(int pwm, int duration){
-  digitalWrite(ENABLE_PIN,HIGH);
-  digitalWrite(INA_PIN,HIGH);
-  digitalWrite(INB_PIN,LOW);
-  analogWrite(PWM_PIN,pwm);
-  delay(duration);
-  analogWrite(PWM_PIN,0);
-  digitalWrite(ENABLE_PIN,LOW);
-}
+// void backward(int pwm, int duration){
+//   digitalWrite(ENABLE_PIN,HIGH);
+//   digitalWrite(INA_PIN,HIGH);
+//   digitalWrite(INB_PIN,LOW);
+//   analogWrite(PWM_PIN,pwm);
+//   delay(duration);
+//   analogWrite(PWM_PIN,0);
+//   digitalWrite(ENABLE_PIN,LOW);
+// }
 
 void setup() {
   //potmeter
@@ -142,40 +157,34 @@ void setup() {
   pinMode(A2,INPUT);
   
   //enable pin
-  //pinMode(7,OUTPUT);
+  pinMode(ENABLE_PIN,OUTPUT);
   //pwm pin
   pinMode(PWM_PIN,OUTPUT);
-  
-//  TCCR1A = 0b10100000;
-//  TCCR1B = 0b00010001;
-//  ICR1 = 400;  
-//  OCR2A = 180; 180 / 255 = 70.6% 
-  
-//
-//  throttlePID.SetMode(AUTOMATIC);
-//  throttlePID.SetSampleTime(1);
 
   Serial.begin(115200);
   Serial.println("Start, waiting 2 secs...");
   delay(2000);
   
-  //Input = (double)analogRead(A1);
-  
   repPid.SetMode(AUTOMATIC);
   
+  //enable motor controller and tell it to go forward
   digitalWrite(ENABLE_PIN,HIGH);
   digitalWrite(INA_PIN,LOW);
   digitalWrite(INB_PIN,HIGH);
   
-  analogWrite(PWM_PIN,100);
-  delay(1000);
-  analogWrite(PWM_PIN,0);
+  //initialize 20kHz mode for pwm
+  analogWrite20k_Init();
+
+  //movetest
+  // analogWrite20k(400);
+  // delay(1000);
+  // analogWrite20k(400);
 }
 
 void loop() {
   
-  int pedRead = analogRead(PED_PIN1); //  x
-  int pedRead2 = analogRead(PED_PIN2); // 2 times x
+  int pedRead = analogRead(PED_PIN1); //  x 
+  int pedRead2 = analogRead(PED_PIN2); // 2 times x 
   pedSum = pedRead + pedRead;
   Serial.println("pedread 1:");
   Serial.println(pedRead);
@@ -198,18 +207,16 @@ void loop() {
   int valveRead = map(tpsSensorRead2, tpsMin, tpsMax, 0, 100);
 
   Serial.println("Pedal %: ");
-  //Serial.println(tpsValue);
   Serial.println(acceleratorRead);
 
   Serial.println("Valve %: ");
-  //Serial.println(tpsValue);
   Serial.println(valveRead);
   
 
   Input=(double)analogRead(A0);
   
-  Setpoint=(double)acceleratorRead;
-  Setpoint=(double)valveRead;
+  // Setpoint=(double)acceleratorRead;
+  // Setpoint=(double)valveRead;
   Input=(double)tpsSensorRead;
   Setpoint = acceleratorRead;
   Input = valveRead;
@@ -224,7 +231,7 @@ void loop() {
 //    Output = 255;
 //  }
   
-  analogWrite(PWM_PIN,Output);
+  analogWrite20k(Output);
   Serial.println("Output: ");
   Serial.println(Output);
   //delay(1000);
